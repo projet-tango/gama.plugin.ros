@@ -57,7 +57,7 @@ global {
 
 	reflex report when: cycle = 20 {
 		write "\n" + ros_received(listener) + " messages received, " + ros_dropped(listener) + " dropped";
-		do pause;
+		do pause();
 	}
 }
 

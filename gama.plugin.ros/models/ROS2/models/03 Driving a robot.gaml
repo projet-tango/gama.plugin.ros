@@ -130,7 +130,7 @@ species controller {
 		// A plain proportional controller: turn towards the target, slow down when nearly there
 		float bearing <- atan2(target.y - believed_position.y, target.x - believed_position.x);
 		// wrapped into [-180, 180] so that turning left by 10 does not read as turning right by 350
-		float turn_error <- ((bearing - believed_heading) + 540) mod 360 - 180;
+		float turn_error <- float(int((bearing - believed_heading) + 540) mod 360 - 180);
 		float distance <- believed_position distance_to target;
 
 		if distance < 0.5 {

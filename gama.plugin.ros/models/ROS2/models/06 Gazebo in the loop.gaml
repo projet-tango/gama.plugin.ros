@@ -100,7 +100,7 @@ global {
 			measured_speed <- float(map<string, unknown>(twist["linear"])["x"]);
 
 			travelled << measured_position;
-			if length(travelled) > 400 { travelled >- first(travelled); }
+//			if length(travelled) > 400 { travelled >- first(travelled); }
 		}
 	}
 
@@ -108,7 +108,7 @@ global {
 	reflex decide when: connected {
 		float bearing <- atan2(target.y - measured_position.y, target.x - measured_position.x);
 		// wrapped into [-180, 180] so that turning left by 10 does not read as turning right by 350
-		float turn_error <- ((bearing - measured_yaw) + 540) mod 360 - 180;
+		float turn_error <- float(int((bearing - measured_yaw) + 540) mod 360 - 180);
 		float distance <- measured_position distance_to target;
 
 		if distance < 0.4 {
@@ -169,8 +169,9 @@ experiment closed_loop type: gui {
 				draw "target" at: world.target + {0.5, 0} color: #tomato font: font("Helvetica", 10);
 
 				// The path actually travelled, as reported on /odom
-				if length(world.travelled) > 1 {
-					draw line(world.travelled) color: #steelblue width: 2;
+				list<point> travelled_cpy <- copy(travelled);
+				if length(travelled_cpy) > 1 {
+					draw line(travelled_cpy) color: #steelblue width: 2;
 				}
 
 				// The real robot, and next to it where dead reckoning thought it would be

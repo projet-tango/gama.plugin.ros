@@ -89,7 +89,7 @@ global {
 		// bool typo <- ros_publish(twist_out, ["linaer"::["x"::1.0]]);
 		// bool wrong <- ros_publish(twist_out, ["linear"::["x"::"fast"]]);
 		write "\nsee the commented lines of the 'mistakes' reflex for what a wrong map reports";
-		do pause;
+		do pause();
 	}
 }
 

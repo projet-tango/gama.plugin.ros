@@ -107,7 +107,7 @@ species wanderer skills:[moving]{
 	rgb colour;
 	ros_publisher commands;
 
-	// A wander: drift the heading, and turn away from the edges rather than leave the arena
+	// Wander around the world, save the turn_rate
 	reflex move {
 		float heading_old <- heading;
 		

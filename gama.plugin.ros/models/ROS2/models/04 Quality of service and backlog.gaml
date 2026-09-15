@@ -79,7 +79,7 @@ global {
 		write "\nclosed the mismatched subscription : " + ros_close(mismatched);
 		write "closed the sensor node             : " + ros_close(sensor_node);
 		write "nodes closed in total              : " + ros_close_all("");
-		do pause;
+		do pause();
 	}
 }
 
