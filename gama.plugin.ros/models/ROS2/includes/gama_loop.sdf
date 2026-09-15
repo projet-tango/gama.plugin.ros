@@ -229,6 +229,16 @@
         <max_linear_acceleration>1.0</max_linear_acceleration>
         <min_linear_acceleration>-1.0</min_linear_acceleration>
       </plugin>
+
+  <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+    <pose_publish_frequency>30</pose_publish_frequency>
+    <publish_model_pose>true</publish_model_pose>
+    <publish_link_pose>false</publish_link_pose>
+    <use_pose_vector_msg>false</use_pose_vector_msg>
+    <topic>/model/gama_bot/pose</topic>
+  </plugin>
+
+
     </model>
 
   </world>

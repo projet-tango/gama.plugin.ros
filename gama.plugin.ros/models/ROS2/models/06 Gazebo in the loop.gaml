@@ -43,12 +43,13 @@ global {
 	// hears, and unlike a sensor reading it will not be superseded a moment later.
 	ros_topic cmd_topic <- ros_topic("/model/gama_bot/cmd_vel", "geometry_msgs/msg/Twist", "reliable");
 	ros_topic odom_topic <- ros_topic("/model/gama_bot/odometry", "nav_msgs/msg/Odometry");
+	ros_topic pose_topic <- ros_topic("/model/gama_bot/pose", "geometry_msgs/msg/Pose");
 
 	ros_publisher commands <- ros_publisher(bridge, cmd_topic);
 
-	// A queue of 1: the robot is somewhere now, and where it was thirty odometry messages ago is of no
-	// use to a controller. ros_dropped will keep climbing, and that is correct, not a problem.
-	ros_subscription feedback <- ros_subscription(bridge, odom_topic, 1);
+	// Using queues of size 1 because we are only interested in the latest value
+	ros_subscription feedback_odom <- ros_subscription(bridge, odom_topic, 1);
+	ros_subscription feedback_pose <- ros_subscription(bridge, pose_topic, 1);
 
 	// --- what GAMA asks for -------------------------------------------------------------------------
 	float cmd_speed <- 0.0;      // m/s
@@ -59,7 +60,7 @@ global {
 	point measured_position <- gz_origin;  // converted to GAMA's frame as it is read
 	float measured_yaw <- 0.0;             // degrees; a translation does not change an angle
 	float measured_speed <- 0.0;           // m/s, as the wheels actually turned
-	list<point> travelled <- [];
+	list<point> travelled <- [];	
 
 	// --- what GAMA would have believed if it had trusted its own commands ---------------------------
 	point dead_reckoned <- gz_origin;
@@ -72,10 +73,11 @@ global {
 	init {
 		// Say plainly whether the other side is there. Without this a wrong topic name, a bridge that
 		// is not running and a mismatched ROS_DOMAIN_ID all look the same: a robot that never moves.
-		connected <- ros_wait_for_publisher(feedback, 5000);
+		connected <- ros_wait_for_publisher(feedback_odom, 5000);
+		connected <- connected and ros_wait_for_publisher(feedback_pose, 3000);
 		write connected
-			? "odometry is flowing -- Gazebo is in the loop"
-			: "no publisher on /model/gama_bot/odometry after 5 s.\n"
+			? "Odometry and robot pose have been received. Gazebo is in the loop"
+			: "no publisher on /model/gama_bot/odometry or /model/gama_bot/pose.\n"
 				+ "  Is 'gz sim -r gama_loop.sdf' running, unpaused?\n"
 				+ "  Is ros_gz_bridge running with gama_loop_bridge.yaml?\n"
 				+ "  Does ROS_DOMAIN_ID match on both sides?";
@@ -83,12 +85,12 @@ global {
 
 	// 1. PERCEIVE -- read the truth Gazebo produced
 	reflex perceive {
-		map<string, unknown> msg <- ros_read_latest(feedback);
-		if msg != nil {
+		map<string, unknown> odom <- ros_read_latest(feedback_odom);
+		map<string, unknown> pose <- ros_read_latest(feedback_pose);
+		if odom != nil and pose != nil {
 			connected <- true;
 
 			// nav_msgs/Odometry nests: pose.pose.position and pose.pose.orientation
-			map<string, unknown> pose <- map<string, unknown>(map<string, unknown>(msg["pose"])["pose"]);
 			map<string, unknown> position <- map<string, unknown>(pose["position"]);
 			map<string, unknown> orientation <- map<string, unknown>(pose["orientation"]);
 			measured_position <- gz_origin + {float(position["x"]), float(position["y"])};
@@ -96,12 +98,12 @@ global {
 			measured_yaw <- 2 * atan2(float(orientation["z"]), float(orientation["w"]));
 
 			// twist.twist.linear.x is the speed the wheels actually produced, not the one commanded
-			map<string, unknown> twist <- map<string, unknown>(map<string, unknown>(msg["twist"])["twist"]);
+			map<string, unknown> twist <- map<string, unknown>(map<string, unknown>(odom["twist"])["twist"]);
 			measured_speed <- float(map<string, unknown>(twist["linear"])["x"]);
 
 			travelled << measured_position;
-//			if length(travelled) > 400 { travelled >- first(travelled); }
 		}
+		
 	}
 
 	// 2. DECIDE -- from the measured pose, never from the commanded one
@@ -196,8 +198,8 @@ experiment closed_loop type: gui {
 		}
 
 		monitor "connected to Gazebo" value: world.connected;
-		monitor "odometry messages received" value: ros_received(world.feedback);
-		monitor "odometry skipped (expected, queue of 1)" value: ros_dropped(world.feedback);
+		monitor "odometry messages received" value: ros_received(world.feedback_odom);
+		monitor "odometry skipped (expected, queue of 1)" value: ros_dropped(world.feedback_odom);
 		monitor "distance to target (m)" value: world.measured_position distance_to world.target;
 	}
 }
