@@ -1,39 +1,65 @@
-# Running the Gazebo models
+# Running the ROS 2 models
 
-These files support `05 Gazebo mirror.gaml` and `06 Gazebo in the loop.gaml`. The other models in this
-project need nothing installed; these two need Gazebo Sim, ROS 2 and `ros_gz_bridge`.
+These files support `05 GAMA in RViz.gaml` and `06 Gazebo in the loop.gaml`. The other models in this
+project need nothing installed. Model 05 needs only ROS 2 and RViz; model 06 additionally needs Gazebo
+Sim and `ros_gz_bridge`.
 
 | File | Used by | What it is |
 |---|---|---|
-| `gama_mirror.sdf` | model 05 | six entities driven by `VelocityControl`, no gravity, no friction |
-| `gama_mirror_bridge.yaml` | model 05 | six `ROS_TO_GZ` bridges for `cmd_vel` |
+| `gama_markers.rviz` | model 05 | an RViz2 layout with a MarkerArray display on `/gama/markers` |
 | `gama_loop.sdf` | model 06 | one differential-drive robot with real physics, walls and a pillar |
 | `gama_loop_bridge.yaml` | model 06 | `cmd_vel` out, `odometry` back |
 
 ## Prerequisites
 
-```bash
-sudo apt install ros-${ROS_DISTRO}-ros-gz-bridge   # Jazzy/Kilted: ros-gz is the gz-sim integration
-```
-
-Gazebo Sim (Harmonic or later) is expected. If you are on Fortress, rename the plugins in the two SDF
-files: `gz-sim-*-system` becomes `ignition-gazebo-*-system` and `gz::sim::systems::` becomes
-`ignition::gazebo::systems::`.
-
-## Model 05 — GAMA simulates, Gazebo shows
-
-Three terminals, in this order:
+Model 05 needs RViz, which comes with any desktop ROS 2 install:
 
 ```bash
-gz sim -r gama_mirror.sdf
+sudo apt install ros-${ROS_DISTRO}-rviz2
 ```
+
+Model 06 additionally needs Gazebo Sim (Harmonic or later) and the bridge:
 
 ```bash
-ros2 run ros_gz_bridge parameter_bridge --ros-args -p config_file:=gama_mirror_bridge.yaml
+sudo apt install ros-${ROS_DISTRO}-ros-gz-bridge
 ```
 
-Then run the `mirror` experiment in GAMA. The six boxes should start moving as soon as the first cycle
-runs, following the six triangles of the GAMA display.
+If you are on Fortress, rename the plugins in `gama_loop.sdf`: `gz-sim-*-system` becomes
+`ignition-gazebo-*-system` and `gz::sim::systems::` becomes `ignition::gazebo::systems::`.
+
+## Model 05 — GAMA simulates, RViz shows
+
+One terminal:
+
+```bash
+rviz2 -d gama_markers.rviz
+```
+
+Then run the `rviz` experiment in GAMA. No bridge and no world file: RViz is a ROS node, so it reads
+GAMA's topics directly.
+
+With a bare `rviz2`, three steps by hand: set **Fixed Frame** to `map`, then *Add → By topic →
+/gama/markers → MarkerArray*.
+
+GAMA publishes two topics here:
+
+| Topic | Type | Why |
+|---|---|---|
+| `/gama/markers` | `visualization_msgs/msg/MarkerArray` | one arrow per agent, plus the arena outline and a label |
+| `/tf` | `tf2_msgs/msg/TFMessage` | one transform `map` → `gama_world` |
+
+**The transform is not optional.** RViz resolves every marker against its fixed frame, so that frame has
+to exist in TF; with no TF at all, `map` is an unknown frame and nothing is drawn, with no error beyond
+a warning in the Global Status panel. GAMA publishes it itself, which also places its corner origin at
+the centre of the RViz grid — so no coordinate in the model has to be converted. If you would rather
+supply it from ROS:
+
+```bash
+ros2 run tf2_ros static_transform_publisher --x -20 --y -20 --frame-id map --child-frame-id gama_world
+```
+
+Markers here are given a lifetime of half a second, so stopping GAMA makes them fade from the display
+instead of freezing on screen. That is the opposite of the Gazebo behaviour described below.
 
 ## Model 06 — the full loop
 
@@ -51,17 +77,16 @@ it found, so a setup problem is reported rather than looking like a robot that w
 **`gz sim -r` matters**: without `-r` the world starts paused, no odometry is published, and the model
 reports that nothing publishes on `/model/gama_bot/odometry`.
 
-## The entities keep moving after GAMA stops
+## The robot keeps moving after GAMA stops (model 06)
 
-Expected, and worth understanding once. `cmd_vel` carries a **setpoint, not an impulse**: `VelocityControl`
-and `DiffDrive` both re-apply the last twist they received at every step of the physics, forever.
-Stopping GAMA only stops the messages, and "no more messages" is indistinguishable from "the same
-command still holds".
+Expected, and worth understanding once. `cmd_vel` carries a **setpoint, not an impulse**: `DiffDrive`
+re-applies the last twist it received at every step of the physics, forever. Stopping GAMA only stops
+the messages, and "no more messages" is indistinguishable from "the same command still holds".
 
 Real robots close this hole with a watchdog that zeroes the motors after a fraction of a second without
-a command. Neither gz-sim system has one, so the stop has to be sent deliberately. Both experiments
-carry a **Stop** user command for that, usable while they are still open; once the experiment is closed
-its ROS node is gone with it and the stop has to come from a terminal:
+a command. gz-sim has none, so the stop has to be sent deliberately. The experiment carries a **Stop**
+user command for that, usable while it is still open; once the experiment is closed its ROS node is gone
+with it and the stop has to come from a terminal:
 
 ```bash
 ros2 topic pub --once /model/gama_bot/cmd_vel geometry_msgs/msg/Twist "{}"
@@ -69,26 +94,65 @@ ros2 topic pub --once /model/gama_bot/cmd_vel geometry_msgs/msg/Twist "{}"
 
 `Ctrl+R` in Gazebo resets the world, which also works.
 
+Model 05 does not have this problem at all: a marker carries a pose rather than a velocity, and it
+expires. Nothing in RViz outlives the simulation that described it.
+
+## Timestamps: use the wall clock, never GAMA's `time`
+
+Anything with a `header` — TF, odometry, markers, scans — carries a stamp that ROS reads as **seconds and
+nanoseconds since the UNIX epoch**. tf2 in particular assumes stamps only ever move forward.
+
+GAMA's `time` is simulation time and **restarts at 0 on every run**. Publishing it as a stamp means the
+second run of a model dates its transforms before the ones the first run left in RViz's buffer, and time
+going backwards is the one thing a TF buffer cannot survive. What you see is the second run displaying
+correctly for a moment, then a stream of `no transform to fixed frame`, then an alternation between
+working and frozen as the buffer is discarded and refilled. Resetting RViz between runs papers over it by
+emptying the buffer by hand.
+
+A long `lifetime` on the markers also papers over it, which makes it easy to misread as a lifetime
+problem: a marker that never expires stays on screen with its last successfully placed pose, so a failed
+transform becomes invisible instead of making the marker disappear. The positions shown during those
+windows are stale.
+
+So stamp with the wall clock:
+
+```
+map<string, unknown> ros_stamp {
+    float ms <- gama.machine_time;             // milliseconds since the epoch
+    int secs <- int(ms / 1000);
+    float fraction <- ms / 1000 - secs;        // secs * 1000 would overflow a 32-bit int
+    return ["sec"::secs, "nanosec"::int(fraction * 1000000000)];
+}
+```
+
+Filling `nanosec` matters as much as the epoch: `["sec"::int(time), "nanosec"::0]` quantises every stamp
+to a whole second, so twenty messages published at 20 Hz all carry the same date, the TF buffer advances
+once per second, and lookups keep landing on times it has not reached yet.
+
+Models 01 to 04 are GAMA-only loopbacks with nothing consuming their headers, so they are unaffected —
+but the same rule applies the moment a real ROS node reads them.
+
 ## Checking each link separately
 
 The chain is GAMA → DDS → bridge → Gazebo, and it is worth testing one hop at a time when nothing
 moves.
 
 ```bash
-# Does Gazebo publish and listen where we think?
+# Is GAMA's traffic visible to ROS at all? (model 05)
+ros2 topic echo /gama/markers --once
+ros2 run tf2_tools view_frames          # should show map -> gama_world
+
+# Does Gazebo publish and listen where we think? (model 06)
 gz topic -l | grep gama
 
 # Is the bridge exposing the ROS side?
 ros2 topic list | grep gama
 
-# Does Gazebo obey a command sent by hand? (model 06)
+# Does Gazebo obey a command sent by hand?
 ros2 topic pub -r 10 /model/gama_bot/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.4}}"
 
 # Is odometry coming back?
 ros2 topic echo /model/gama_bot/odometry --once
-
-# Is GAMA's own traffic visible to ROS? Run model 01 and:
-ros2 topic echo /chatter
 ```
 
 If `ros2 topic echo /chatter` shows GAMA's messages, the DDS link is fine and the problem is in the
@@ -97,13 +161,13 @@ bridge or the SDF. If it shows nothing, the problem is between GAMA and ROS — 
 The single most useful command when a model reports that nobody is listening:
 
 ```bash
-ros2 topic info -v /model/gama_0/cmd_vel
+ros2 topic info -v /gama/markers
 ```
 
 It prints `Publisher count`, `Subscription count` and the full QoS of both ends. `Publisher count: 1`
-with `Subscription count: 0` means GAMA is fine and no bridge is subscribed — most often a bridge that
-is running happily with the *other* config file. Check that starting the mirror bridge prints **six**
-`Creating ROS->GZ Bridge` lines, not two. GAMA appears as `_CREATED_BY_BARE_DDS_APP_` with
+with `Subscription count: 0` means GAMA is fine and nothing is listening — for model 06, most often a
+bridge running happily with the *other* config file, so check that it printed the `Creating ROS->GZ
+Bridge` lines you expect. GAMA appears as `_CREATED_BY_BARE_DDS_APP_` with
 `Topic type hash: INVALID`, which is normal: jros2 is a bare DDS application, not an rclcpp node, and
 it does not prevent matching.
 
@@ -134,10 +198,8 @@ Then the two sides share the host's network stack and discovery works. Allowing 
 Windows firewall on private networks may also be needed. Running GAMA inside WSL2 alongside ROS avoids
 the question entirely.
 
-## Adding entities to model 05
+## Adding agents to model 05
 
-The number of entities is fixed by the SDF, not by GAMA: `nb_agents` in the model cannot exceed what
-`gama_mirror.sdf` declares. To add a seventh, copy the last `<model name="gama_5">` block, rename it to
-`gama_6`, give it a different `<pose>`, add the matching entry to `gama_mirror_bridge.yaml`, and add its
-starting x to `gz_start_x` in the GAML — the two worlds have to start from the same pose or the mirror
-is only ever parallel to the original.
+Just raise the "Number of agents" parameter. Nothing outside the model declares them: one MarkerArray
+carries the whole population, however large. This is the main practical difference with driving entities
+in a physics engine, where each one had to exist in the world file first.
