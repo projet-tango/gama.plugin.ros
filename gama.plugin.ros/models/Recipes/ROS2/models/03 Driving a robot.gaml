@@ -17,7 +17,7 @@ global {
 
 	float step <- 0.1 #s;
 	float world_size <- 20.0;
-	geometry shape <- square(world_size);
+	geometry shape <- envelope(square(world_size));
 
 	// Two nodes on purpose: this is what two processes would look like, and DDS does not care that they
 	// happen to be in the same JVM. Both are closed when the experiment is disposed.
@@ -156,7 +156,7 @@ experiment drive type: gui {
 		}
 
 		display "What the controller believes" type: 2d {
-			chart "Position reported on /odom" type: series {
+			chart "Position reported on /odom" kind: series {
 				data "x" value: first(controller).believed_position.x color: #steelblue;
 				data "y" value: first(controller).believed_position.y color: #seagreen;
 			}

@@ -165,7 +165,7 @@ experiment closed_loop type: gui {
 			graphics "arena" {
 				draw world.shape color: #white border: #lightgray;
 				// the pillar of the SDF world, at (2, 2) in Gazebo's frame
-				draw circle(0.6) at: world.gz_origin + {2, 2} color: #chocolate;
+				draw circle(0.6) at: world.gz_origin + -{2, 2} color: #chocolate;
 
 				draw circle(0.4) at: world.target color: #tomato;
 				draw "target" at: world.target + {0.5, 0} color: #tomato font: font("Helvetica", 10);
@@ -185,14 +185,14 @@ experiment closed_loop type: gui {
 		}
 
 		display "What GAMA asked vs what Gazebo did" type: 2d {
-			chart "Forward speed (m/s)" type: series {
+			chart "Forward speed (m/s)" kind: series {
 				data "commanded" value: world.cmd_speed color: #tomato;
 				data "measured on /odom" value: world.measured_speed color: #steelblue;
 			}
 		}
 
-		display "Cost of trusting your own commands" type: 2d {
-			chart "Dead reckoning error (m)" type: series {
+		display "Cost of trusting your own commands" type: 2d antialias: false {
+			chart "Dead reckoning error (m)" kind: series {
 				data "drift" value: world.dead_reckoned distance_to world.measured_position color: #purple;
 			}
 		}
