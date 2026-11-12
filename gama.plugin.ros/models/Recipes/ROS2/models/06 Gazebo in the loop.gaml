@@ -32,10 +32,18 @@ global {
 	float arena <- 12.0;
 	geometry shape <- square(arena);
 
-	// Gazebo puts the origin at the centre of the arena, GAMA at a corner. The two frames differ by
-	// this translation and nothing else, and it is applied at one single place: when odometry comes in.
-	// Nothing needs converting on the way out, because a velocity is the same in both frames.
+	// Gazebo puts the origin at the centre of the arena, GAMA at a corner. And Gazebo, like all of ROS,
+	// is right-handed with y pointing up (north) and yaws counter-clockwise, while GAMA's y points down
+	// the screen, so its angles turn clockwise. The two frames therefore differ by a translation AND a
+	// flip of the y axis, which in turn flips the sign of every angle:
+	//     x_gama = 6 + x_gz      y_gama = 6 - y_gz      yaw_gama = -yaw_gz
+	// Forgetting the flip gives a display that is the mirror image of Gazebo's top view.
 	point gz_origin <- {arena / 2, arena / 2};
+
+	// The only place where a Gazebo position becomes a GAMA one
+	point to_gama (point gz) {
+		return {gz_origin.x + gz.x, gz_origin.y - gz.y};
+	}
 
 	ros_node bridge <- ros_node("gama_loop");
 
@@ -58,7 +66,7 @@ global {
 	// --- what Gazebo reports ------------------------------------------------------------------------
 	bool connected <- false;
 	point measured_position <- gz_origin;  // converted to GAMA's frame as it is read
-	float measured_yaw <- 0.0;             // degrees; a translation does not change an angle
+	float measured_yaw <- 0.0;             // degrees, in GAMA's frame: clockwise on screen
 	float measured_speed <- 0.0;           // m/s, as the wheels actually turned
 	list<point> travelled <- [];	
 
@@ -66,11 +74,13 @@ global {
 	point dead_reckoned <- gz_origin;
 	float dead_reckoned_yaw <- 0.0;
 
-	// Written as Gazebo coordinates plus the origin, so the numbers stay the ones you would type into
-	// `gz topic` or read in the 3D view
-	point target <- gz_origin + {3.5, -3.5};
+	// Written in Gazebo coordinates, so the numbers stay the ones you would type into `gz topic` or
+	// read in the 3D view, and converted once
+	point target;
 
 	init {
+		target <- to_gama({3.5, -3.5});
+
 		// Say plainly whether the other side is there. Without this a wrong topic name, a bridge that
 		// is not running and a mismatched ROS_DOMAIN_ID all look the same: a robot that never moves.
 		connected <- ros_wait_for_publisher(feedback_odom, 5000);
@@ -90,12 +100,14 @@ global {
 		if odom != nil and pose != nil {
 			connected <- true;
 
-			// nav_msgs/Odometry nests: pose.pose.position and pose.pose.orientation
+			// geometry_msgs/Pose is flat: position and orientation. It is the pose in the world frame,
+			// whereas odometry starts from wherever the robot was spawned and drifts with wheel slip.
 			map<string, unknown> position <- map<string, unknown>(pose["position"]);
 			map<string, unknown> orientation <- map<string, unknown>(pose["orientation"]);
-			measured_position <- gz_origin + {float(position["x"]), float(position["y"])};
-			// a rotation around z is the quaternion (0, 0, sin(yaw/2), cos(yaw/2)), so yaw = 2*atan2(z, w)
-			measured_yaw <- 2 * atan2(float(orientation["z"]), float(orientation["w"]));
+			measured_position <- to_gama({float(position["x"]), float(position["y"])});
+			// a rotation around z is the quaternion (0, 0, sin(yaw/2), cos(yaw/2)), so yaw = 2*atan2(z, w);
+			// negated, because flipping the y axis turns counter-clockwise into clockwise
+			measured_yaw <- -2 * atan2(float(orientation["z"]), float(orientation["w"]));
 
 			// twist.twist.linear.x is the speed the wheels actually produced, not the one commanded
 			map<string, unknown> twist <- map<string, unknown>(map<string, unknown>(odom["twist"])["twist"]);
@@ -116,7 +128,7 @@ global {
 		if distance < 0.4 {
 			// Arrived, according to Gazebo. Somewhere else to go, kept clear of the walls and the pillar.
 			target <- one_of(([{3.5, 3.5}, {-3.5, 3.5}, {-3.5, -3.5}, {3.5, -3.5}, {0.0, 4.0}]
-				collect (gz_origin + each)) where (each distance_to target > 1.0));
+				collect world.to_gama(each)) where (each distance_to target > 1.0));
 		}
 
 		// A plain proportional controller: slow down when close, and when badly aimed turn on the spot
@@ -129,8 +141,9 @@ global {
 	reflex act when: connected {
 		bool sent <- ros_publish(commands, [
 			"linear"::["x"::cmd_speed],
-			// GAMA turns in degrees per second, ROS in radians per second
-			"angular"::["z"::cmd_turn * #pi / 180.0]
+			// GAMA turns in degrees per second, ROS in radians per second. And in the opposite direction:
+			// a positive turn is clockwise on GAMA's screen, counter-clockwise for ROS.
+			"angular"::["z"::-cmd_turn * #pi / 180.0]
 		]);
 
 		dead_reckoned_yaw <- dead_reckoned_yaw + cmd_turn * step;
@@ -165,7 +178,7 @@ experiment closed_loop type: gui {
 			graphics "arena" {
 				draw world.shape color: #white border: #lightgray;
 				// the pillar of the SDF world, at (2, 2) in Gazebo's frame
-				draw circle(0.6) at: world.gz_origin + -{2, 2} color: #chocolate;
+				draw circle(0.6) at: world.to_gama({2, 2}) color: #chocolate;
 
 				draw circle(0.4) at: world.target color: #tomato;
 				draw "target" at: world.target + {0.5, 0} color: #tomato font: font("Helvetica", 10);
@@ -191,7 +204,7 @@ experiment closed_loop type: gui {
 			}
 		}
 
-		display "Cost of trusting your own commands" type: 2d antialias: false {
+		display "Cost of trusting your own commands" type: 2d {
 			chart "Dead reckoning error (m)" kind: series {
 				data "drift" value: world.dead_reckoned distance_to world.measured_position color: #purple;
 			}
