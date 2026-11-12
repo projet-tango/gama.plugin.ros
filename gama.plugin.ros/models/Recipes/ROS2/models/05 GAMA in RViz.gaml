@@ -98,10 +98,10 @@ global {
 			"type"::marker_arrow,
 			"action"::action_add,
 			"pose"::[
-				"position"::["x"::each.location.x, "y"::each.location.y, "z"::0.3],
+				"position"::["x"::world_size-each.location.x, "y"::each.location.y, "z"::0.3],
 				// a rotation of 'heading' around z, in the (0, 0, sin(a/2), cos(a/2)) form GAMA's
 				// degree-based cos and sin write directly
-				"orientation"::["z"::sin(each.heading / 2), "w"::cos(each.heading / 2)]
+				"orientation"::["z"::cos(each.heading / 2), "w"::sin(each.heading / 2)]
 			],
 			"scale"::["x"::1.6, "y"::0.5, "z"::0.5],   // length, width, height of the arrow
 			// std_msgs/ColorRGBA is four floats in 0..1, a GAML rgb is three ints in 0..255
