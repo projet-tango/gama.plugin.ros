@@ -27,10 +27,6 @@ global {
 	// One publisher for the whole population, not one per agent: a MarkerArray carries as many markers as we want
 	ros_publisher markers_out <- ros_publisher(bridge, ros_topic("/gama/markers", "visualization_msgs/msg/MarkerArray"));
 
-	// RViz will not draw anything whose frame it cannot resolve.
-	// So GAMA publishes the transform that makes its world a frame of the ROS world
-	ros_publisher tf_out <- ros_publisher(bridge, ros_topic("/tf", "tf2_msgs/msg/TFMessage"));
-
 	// visualization_msgs/Marker declares these as constants; GAML cannot reach Java constants, so they
 	// are repeated here. They are part of the message definition and will not change.
 	int marker_arrow <- 0;
@@ -39,15 +35,19 @@ global {
 	int action_add <- 0;       
 	int action_deleteall <- 3;
 
-	// The frame GAMA's coordinates are expressed in, placed in "map" by the transform below
-	string gama_frame <- "gama_world";
-
 	list<rgb> palette <- [#steelblue, #tomato, #seagreen, #orange, #mediumpurple, #teal];
 
-	// returns a timestamp for ros. It can only move forward
-	map<string, unknown> ros_stamp (){
-		return ["sec"::int(gama.machine_time/1000), "nanosec"::int((gama.machine_time mod 1000) * 1000000)];
-	}
+	// Where the GAMA world sits in ROS. This is the default and could be left out: the centre of the world
+	// at the origin of "map", which is the centre of the RViz grid. Every ros_pose and ros_point below, and
+	// every header left out of a message, use it.
+	string frame <- ros_world_frame("map", {0.0, 0.0});
+
+	// RViz resolves every marker against its fixed frame, so that frame has to exist in TF -- with no TF at
+	// all, "map" is an unknown frame and nothing is drawn. ros_world_tf makes it exist, as a static transform
+	// to a "gama_world" frame at the centre of the world. "latched" keeps the last message for subscribers
+	// that join later, which is how /tf_static works; the publisher must therefore live as long as the
+	// simulation, hence a global.
+	ros_publisher tf_static_out <- ros_publisher(bridge, ros_topic("/tf_static", "tf2_msgs/msg/TFMessage", "latched"));
 
 	init {
 		// Created one by one so that each agent gets a marker id that is stable for the whole run
@@ -58,62 +58,42 @@ global {
 			}
 		}
 
+		// Sent once: the frame does not move, and the latched topic hands it to an RViz started later
+		bool placed <- ros_publish(tf_static_out, ros_world_tf("gama_world"));
+
 		// A previous run may have left markers on the topic with ids this one will not reuse. One
 		// DELETEALL clears the display rather than leaving ghosts behind.
 		bool cleared <- ros_publish(markers_out, ["markers"::[[
-			"header"::["frameId"::gama_frame],
 			"ns"::"agents",
 			"id"::0,
 			"action"::action_deleteall
 		]]]);
 	}
 
-	// RViz resolves every marker against its fixed frame, so that frame has to exist in TF -- with no
-	// TF at all, "map" is an unknown frame and nothing is drawn. This one transform does two jobs: it
-	// makes "map" exist, and it places GAMA's corner origin at the centre of the RViz grid, so no
-	// coordinate anywhere in this model has to be converted.
-	reflex place_the_world {
-		bool sent <- ros_publish(tf_out, ["transforms"::[[
-			"header"::["frameId"::"map", "stamp"::ros_stamp()],
-			"childFrameId"::gama_frame,
-			"transform"::[
-				"translation"::["x"::-(world_size / 2), "y"::-(world_size / 2), "z"::0.0],
-				"rotation"::["w"::1.0]   // identity: the two frames differ by a translation only
-			]
-		]]]);
-	}
-
 	reflex draw_in_rviz {
-		map<string, unknown> header <- ["frameId"::gama_frame, "stamp"::ros_stamp()];
+		// No header anywhere below: one left out is stamped with the wall clock and given the frame of the
+		// world when the message is published.
 		// Half a second: long enough to survive between two cycles, short enough that the markers fade
 		// out on their own when GAMA stops rather than freezing on screen forever
 		map<string, unknown> lifetime <- ["sec"::0, "nanosec"::500000000];
 
 		// One arrow per agent. An ARROW points along the +x of its own pose, so the heading is carried
-		// by the quaternion and nothing needs to be drawn by hand.
+		// by the quaternion of ros_pose and nothing needs to be drawn by hand.
 		list<map<string, unknown>> batch <- wanderer collect ([
-			"header"::header,
 			"ns"::"agents",
 			"id"::each.marker_id,
 			"type"::marker_arrow,
 			"action"::action_add,
-			"pose"::[
-				"position"::["x"::world_size-each.location.x, "y"::each.location.y, "z"::0.3],
-				// a rotation of 'heading' around z, in the (0, 0, sin(a/2), cos(a/2)) form GAMA's
-				// degree-based cos and sin write directly
-				"orientation"::["z"::cos(each.heading / 2), "w"::sin(each.heading / 2)]
-			],
+			"pose"::ros_pose(each.location + {0, 0, 0.3}, each.heading),
 			"scale"::["x"::1.6, "y"::0.5, "z"::0.5],   // length, width, height of the arrow
-			// std_msgs/ColorRGBA is four floats in 0..1, a GAML rgb is three ints in 0..255
-			"color"::["r"::each.colour.red / 255.0, "g"::each.colour.green / 255.0,
-				"b"::each.colour.blue / 255.0, "a"::1.0],
+			// std_msgs/ColorRGBA is four floats in 0..1: a GAML rgb is converted when published
+			"color"::each.colour,
 			"lifetime"::lifetime
 		]);
 
-		// The boundary of the GAMA world, as a closed LINE_STRIP. Its 'points' are a list of maps,
-		// which is how any ROS sequence of sub-messages is written.
+		// The boundary of the GAMA world, as a closed LINE_STRIP. Its 'points' are a list of maps, which is
+		// how any ROS sequence of sub-messages is written, and ros_point turns each GAMA corner into one.
 		batch << [
-			"header"::header,
 			"ns"::"arena",
 			"id"::0,
 			"type"::marker_line_strip,
@@ -121,27 +101,19 @@ global {
 			"pose"::["orientation"::["w"::1.0]],
 			"scale"::["x"::0.15],                      // for a line strip, scale.x is the line width
 			"color"::["r"::0.6, "g"::0.6, "b"::0.6, "a"::1.0],
-			"points"::[
-				["x"::0.0, "y"::0.0, "z"::0.0],
-				["x"::world_size, "y"::0.0, "z"::0.0],
-				["x"::world_size, "y"::world_size, "z"::0.0],
-				["x"::0.0, "y"::world_size, "z"::0.0],
-				["x"::0.0, "y"::0.0, "z"::0.0]
-			],
+			"points"::[{0, 0}, {world_size, 0}, {world_size, world_size}, {0, world_size}, {0, 0}]
+				collect ros_point(each),
 			"lifetime"::lifetime
 		];
 
 		// A label, so the RViz window says which cycle it is showing
 		batch << [
-			"header"::header,
 			"ns"::"status",
 			"id"::0,
 			"type"::marker_text,
 			"action"::action_add,
-			"pose"::[
-				"position"::["x"::world_size / 2, "y"::world_size + 2.0, "z"::1.0],
-				"orientation"::["w"::1.0]
-			],
+			// just above the top edge of the GAMA display, which is north in ROS
+			"pose"::ros_pose({world_size / 2, -2.0, 1.0}, 0.0),
 			"scale"::["z"::1.5],                       // for text, scale.z is the character height
 			"color"::["r"::0.2, "g"::0.2, "b"::0.2, "a"::1.0],
 			"text"::"GAMA cycle " + cycle + " -- " + length(wanderer) + " agents",

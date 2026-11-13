@@ -46,16 +46,16 @@ GAMA publishes two topics here:
 | Topic | Type | Why |
 |---|---|---|
 | `/gama/markers` | `visualization_msgs/msg/MarkerArray` | one arrow per agent, plus the arena outline and a label |
-| `/tf` | `tf2_msgs/msg/TFMessage` | one transform `map` → `gama_world` |
+| `/tf_static` | `tf2_msgs/msg/TFMessage` | one static transform `map` → `gama_world`, sent once |
 
 **The transform is not optional.** RViz resolves every marker against its fixed frame, so that frame has
 to exist in TF; with no TF at all, `map` is an unknown frame and nothing is drawn, with no error beyond
-a warning in the Global Status panel. GAMA publishes it itself, which also places its corner origin at
-the centre of the RViz grid — so no coordinate in the model has to be converted. If you would rather
-supply it from ROS:
+a warning in the Global Status panel. GAMA publishes it itself with `ros_world_tf("gama_world")`, once,
+on a `"latched"` topic, so an RViz started after GAMA still receives it. If you would rather supply it
+from ROS:
 
 ```bash
-ros2 run tf2_ros static_transform_publisher --x -20 --y -20 --frame-id map --child-frame-id gama_world
+ros2 run tf2_ros static_transform_publisher --frame-id map --child-frame-id gama_world
 ```
 
 Markers here are given a lifetime of half a second, so stopping GAMA makes them fade from the display
@@ -97,40 +97,45 @@ ros2 topic pub --once /model/gama_bot/cmd_vel geometry_msgs/msg/Twist "{}"
 Model 05 does not have this problem at all: a marker carries a pose rather than a velocity, and it
 expires. Nothing in RViz outlives the simulation that described it.
 
-## Timestamps: use the wall clock, never GAMA's `time`
+## GAMA's frame is not ROS's frame
+
+GAMA's y axis points **down** the screen and its headings turn **clockwise**; ROS is right-handed (REP 103),
+y to the left of x, yaws counter-clockwise, in radians. The two differ by a **reflection**, which no TF can
+express, since a transform is a rotation plus a translation. So the plugin does the conversion, and the
+models never write it by hand:
+
+| GAMA → ROS | ROS → GAMA | What |
+|---|---|---|
+| `ros_point(location)` | `ros_location(msg)` | positions, placed in the frame of the world |
+| `ros_orientation(heading)` | `ros_heading(msg)` | heading in degrees ↔ quaternion |
+| `ros_pose(location, heading)` | both of the above | `geometry_msgs/Pose` |
+| `ros_twist(speed, turn_rate)` | `ros_speed(msg)`, `ros_turn_rate(msg)` | m/s and degrees/s ↔ `Twist` |
+
+The readers search the message, so `ros_location` takes a `Point`, a `Pose`, a `PoseStamped`, an
+`Odometry` (`pose.pose.position`) or a `TransformStamped` alike.
+
+Where the GAMA world sits is said once, with `ros_world_frame(frame_id, centre)`: the ROS frame, and the
+point of that frame the **centre** of the GAMA world goes to. The default is the centre of `map` at the
+origin, which is where a Gazebo world, the RViz grid and the odometry of a freshly booted robot all put
+theirs, so most models never call it.
+
+## Timestamps: left to the plugin
 
 Anything with a `header` — TF, odometry, markers, scans — carries a stamp that ROS reads as **seconds and
 nanoseconds since the UNIX epoch**. tf2 in particular assumes stamps only ever move forward.
 
-GAMA's `time` is simulation time and **restarts at 0 on every run**. Publishing it as a stamp means the
-second run of a model dates its transforms before the ones the first run left in RViz's buffer, and time
-going backwards is the one thing a TF buffer cannot survive. What you see is the second run displaying
-correctly for a moment, then a stream of `no transform to fixed frame`, then an alternation between
-working and frozen as the buffer is discarded and refilled. Resetting RViz between runs papers over it by
-emptying the buffer by hand.
+**A header left out of a published message is filled in**: the wall-clock time, and the frame of the
+world. A header given without `stamp` or `frameId` gets the missing part. A stamp written explicitly is
+left alone, so `"stamp"::["sec"::0]` still means zero.
 
-A long `lifetime` on the markers also papers over it, which makes it easy to misread as a lifetime
-problem: a marker that never expires stays on screen with its last successfully placed pose, so a failed
-transform becomes invisible instead of making the marker disappear. The positions shown during those
-windows are stale.
-
-So stamp with the wall clock:
-
-```
-map<string, unknown> ros_stamp {
-    float ms <- gama.machine_time;             // milliseconds since the epoch
-    int secs <- int(ms / 1000);
-    float fraction <- ms / 1000 - secs;        // secs * 1000 would overflow a 32-bit int
-    return ["sec"::secs, "nanosec"::int(fraction * 1000000000)];
-}
-```
-
-Filling `nanosec` matters as much as the epoch: `["sec"::int(time), "nanosec"::0]` quantises every stamp
-to a whole second, so twenty messages published at 20 Hz all carry the same date, the TF buffer advances
-once per second, and lookups keep landing on times it has not reached yet.
-
-Models 01 to 04 are GAMA-only loopbacks with nothing consuming their headers, so they are unaffected —
-but the same rule applies the moment a real ROS node reads them.
+What not to write instead is GAMA's `time`. It is simulation time and **restarts at 0 on every run**.
+Publishing it as a stamp means the second run of a model dates its transforms before the ones the first
+run left in RViz's buffer, and time going backwards is the one thing a TF buffer cannot survive. What you
+see is the second run displaying correctly for a moment, then a stream of `no transform to fixed frame`,
+then an alternation between working and frozen as the buffer is discarded and refilled. A long
+`lifetime` on markers papers over it, which makes it easy to misread as a lifetime problem. Likewise
+`"nanosec"::0` quantises every stamp to a whole second, so twenty messages published at 20 Hz all carry
+the same date.
 
 ## Checking each link separately
 
@@ -140,7 +145,7 @@ moves.
 ```bash
 # Is GAMA's traffic visible to ROS at all? (model 05)
 ros2 topic echo /gama/markers --once
-ros2 run tf2_tools view_frames          # should show map -> gama_world
+ros2 topic echo /tf_static --once --qos-durability transient_local   # map -> gama_world
 
 # Does Gazebo publish and listen where we think? (model 06)
 gz topic -l | grep gama

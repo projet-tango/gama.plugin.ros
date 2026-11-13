@@ -32,17 +32,17 @@ global {
 	float arena <- 12.0;
 	geometry shape <- square(arena);
 
-	// Gazebo puts the origin at the centre of the arena, GAMA at a corner. And Gazebo, like all of ROS,
-	// is right-handed with y pointing up (north) and yaws counter-clockwise, while GAMA's y points down
-	// the screen, so its angles turn clockwise. The two frames therefore differ by a translation AND a
-	// flip of the y axis, which in turn flips the sign of every angle:
-	//     x_gama = 6 + x_gz      y_gama = 6 - y_gz      yaw_gama = -yaw_gz
-	// Forgetting the flip gives a display that is the mirror image of Gazebo's top view.
-	point gz_origin <- {arena / 2, arena / 2};
+	// Gazebo puts the origin at the centre of the arena, GAMA at a corner. Gazebo, like all of ROS, is also
+	// right-handed with y pointing north and yaws counter-clockwise, while GAMA's y points down the screen
+	// and its headings turn clockwise: the two frames differ by a translation AND a reflection. The
+	// ros_location, ros_heading and ros_twist operators do both, as long as they know where the GAMA world
+	// sits in ROS. Its centre at the origin is the default, which is exactly this arena, so the line below
+	// only says it out loud.
+	string frame <- ros_world_frame("world", {0.0, 0.0});
 
-	// The only place where a Gazebo position becomes a GAMA one
-	point to_gama (point gz) {
-		return {gz_origin.x + gz.x, gz_origin.y - gz.y};
+	// A Gazebo position, as you would type it into `gz topic` or read it in the 3D view, as a GAMA one
+	point from_gz (float x, float y) {
+		return ros_location(["x"::x, "y"::y]);
 	}
 
 	ros_node bridge <- ros_node("gama_loop");
@@ -65,13 +65,13 @@ global {
 
 	// --- what Gazebo reports ------------------------------------------------------------------------
 	bool connected <- false;
-	point measured_position <- gz_origin;  // converted to GAMA's frame as it is read
-	float measured_yaw <- 0.0;             // degrees, in GAMA's frame: clockwise on screen
+	point measured_position <- world.location;  // converted to GAMA's frame as it is read
+	float measured_yaw <- 0.0;             // degrees in [0, 360), in GAMA's frame: clockwise on screen
 	float measured_speed <- 0.0;           // m/s, as the wheels actually turned
 	list<point> travelled <- [];	
 
 	// --- what GAMA would have believed if it had trusted its own commands ---------------------------
-	point dead_reckoned <- gz_origin;
+	point dead_reckoned <- world.location;
 	float dead_reckoned_yaw <- 0.0;
 
 	// Written in Gazebo coordinates, so the numbers stay the ones you would type into `gz topic` or
@@ -79,7 +79,7 @@ global {
 	point target;
 
 	init {
-		target <- to_gama({3.5, -3.5});
+		target <- from_gz(3.5, -3.5);
 
 		// Say plainly whether the other side is there. Without this a wrong topic name, a bridge that
 		// is not running and a mismatched ROS_DOMAIN_ID all look the same: a robot that never moves.
@@ -100,18 +100,13 @@ global {
 		if odom != nil and pose != nil {
 			connected <- true;
 
-			// geometry_msgs/Pose is flat: position and orientation. It is the pose in the world frame,
-			// whereas odometry starts from wherever the robot was spawned and drifts with wheel slip.
-			map<string, unknown> position <- map<string, unknown>(pose["position"]);
-			map<string, unknown> orientation <- map<string, unknown>(pose["orientation"]);
-			measured_position <- to_gama({float(position["x"]), float(position["y"])});
-			// a rotation around z is the quaternion (0, 0, sin(yaw/2), cos(yaw/2)), so yaw = 2*atan2(z, w);
-			// negated, because flipping the y axis turns counter-clockwise into clockwise
-			measured_yaw <- -2 * atan2(float(orientation["z"]), float(orientation["w"]));
-
-			// twist.twist.linear.x is the speed the wheels actually produced, not the one commanded
-			map<string, unknown> twist <- map<string, unknown>(map<string, unknown>(odom["twist"])["twist"]);
-			measured_speed <- float(map<string, unknown>(twist["linear"])["x"]);
+			// geometry_msgs/Pose is the pose in the world frame, whereas odometry starts from wherever the
+			// robot was spawned and drifts with wheel slip: so the position comes from the pose...
+			measured_position <- ros_location(pose);
+			measured_yaw <- ros_heading(pose);
+			// ...and the speed from the odometry: twist.twist.linear.x is the speed the wheels actually
+			// produced, not the one commanded
+			measured_speed <- ros_speed(odom);
 
 			travelled << measured_position;
 		}
@@ -128,7 +123,7 @@ global {
 		if distance < 0.4 {
 			// Arrived, according to Gazebo. Somewhere else to go, kept clear of the walls and the pillar.
 			target <- one_of(([{3.5, 3.5}, {-3.5, 3.5}, {-3.5, -3.5}, {3.5, -3.5}, {0.0, 4.0}]
-				collect world.to_gama(each)) where (each distance_to target > 1.0));
+				collect world.from_gz(each.x, each.y)) where (each distance_to target > 1.0));
 		}
 
 		// A plain proportional controller: slow down when close, and when badly aimed turn on the spot
@@ -139,12 +134,9 @@ global {
 
 	// 3. ACT -- send it, and integrate the same command separately to see what trusting it would cost
 	reflex act when: connected {
-		bool sent <- ros_publish(commands, [
-			"linear"::["x"::cmd_speed],
-			// GAMA turns in degrees per second, ROS in radians per second. And in the opposite direction:
-			// a positive turn is clockwise on GAMA's screen, counter-clockwise for ROS.
-			"angular"::["z"::-cmd_turn * #pi / 180.0]
-		]);
+		// GAMA turns in degrees per second, ROS in radians per second, and in the opposite direction: a
+		// positive turn is clockwise on GAMA's screen, counter-clockwise for ROS. ros_twist does both.
+		bool sent <- ros_publish(commands, ros_twist(cmd_speed, cmd_turn));
 
 		dead_reckoned_yaw <- dead_reckoned_yaw + cmd_turn * step;
 		dead_reckoned <- dead_reckoned
@@ -169,7 +161,7 @@ experiment closed_loop type: gui {
 		ask simulation {
 			cmd_speed <- 0.0;
 			cmd_turn <- 0.0;
-			bool stopped <- ros_publish(commands, ["linear"::["x"::0.0], "angular"::["z"::0.0]]);
+			bool stopped <- ros_publish(commands, ros_twist(0.0, 0.0));
 		}
 	}
 
@@ -178,7 +170,7 @@ experiment closed_loop type: gui {
 			graphics "arena" {
 				draw world.shape color: #white border: #lightgray;
 				// the pillar of the SDF world, at (2, 2) in Gazebo's frame
-				draw circle(0.6) at: world.to_gama({2, 2}) color: #chocolate;
+				draw circle(0.6) at: world.from_gz(2.0, 2.0) color: #chocolate;
 
 				draw circle(0.4) at: world.target color: #tomato;
 				draw "target" at: world.target + {0.5, 0} color: #tomato font: font("Helvetica", 10);

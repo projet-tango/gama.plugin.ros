@@ -40,7 +40,7 @@ global {
  */
 species robot {
 
-	float yaw <- 0.0;        // degrees, GAMA's convention for cos, sin and rotate
+	float yaw <- 0.0;        // degrees, GAMA's convention for cos, sin and rotate: clockwise on screen
 	float speed <- 0.0;      // m/s, forward
 	float turn_rate <- 0.0;  // degrees/s
 
@@ -57,12 +57,10 @@ species robot {
 	reflex obey {
 		map<string, unknown> cmd <- ros_read_latest(commands);
 		if cmd != nil {
-			// Nested messages come back as nested maps, so a Twist reads as two maps of three floats
-			map<string, unknown> linear <- map<string, unknown>(cmd["linear"]);
-			map<string, unknown> angular <- map<string, unknown>(cmd["angular"]);
-			speed <- float(linear["x"]);
-			// ROS turns in radians per second, GAMA works in degrees
-			turn_rate <- float(angular["z"]) / #pi * 180.0;
+			// ROS turns in radians per second and counter-clockwise, GAMA in degrees and clockwise on screen:
+			// ros_turn_rate does both conversions, ros_speed reads linear.x
+			speed <- ros_speed(cmd);
+			turn_rate <- ros_turn_rate(cmd);
 		}
 	}
 
@@ -72,19 +70,14 @@ species robot {
 	}
 
 	reflex report {
-		// Half a heading, in degrees, is what GAMA's cos and sin expect: the quaternion of a rotation
-		// around z is (0, 0, sin(yaw/2), cos(yaw/2))
+		// ros_pose converts a GAMA location and heading to a ROS pose: the world is placed with its centre at
+		// the origin of the frame, where a real base starts its odometry, and its y axis turned the ROS way.
+		// The stamp of the header is left out: it is filled with the wall-clock time when published.
 		bool sent <- ros_publish(odom_out, [
-			"header"::["frameId"::"odom", "stamp"::["sec"::int(time), "nanosec"::0]],
+			"header"::["frameId"::"odom"],
 			"childFrameId"::"base_link",
-			"pose"::["pose"::[
-				"position"::["x"::location.x, "y"::location.y, "z"::0.0],
-				"orientation"::["z"::sin(yaw / 2), "w"::cos(yaw / 2)]
-			]],
-			"twist"::["twist"::[
-				"linear"::["x"::speed],
-				"angular"::["z"::turn_rate * #pi / 180.0]
-			]]
+			"pose"::["pose"::ros_pose(location, yaw)],
+			"twist"::["twist"::ros_twist(speed, turn_rate)]
 		]);
 	}
 
@@ -116,13 +109,10 @@ species controller {
 	reflex perceive {
 		map<string, unknown> msg <- ros_read_latest(feedback);
 		if msg != nil {
-			// nav_msgs/Odometry nests deeply: pose.pose.position, so map by map
-			map<string, unknown> pose <- map<string, unknown>(map<string, unknown>(msg["pose"])["pose"]);
-			map<string, unknown> position <- map<string, unknown>(pose["position"]);
-			map<string, unknown> orientation <- map<string, unknown>(pose["orientation"]);
-			believed_position <- {float(position["x"]), float(position["y"])};
-			// back out of the quaternion: yaw = 2 * atan2(z, w), in degrees since GAMA's atan2 gives degrees
-			believed_heading <- 2 * atan2(float(orientation["z"]), float(orientation["w"]));
+			// nav_msgs/Odometry nests the pose three levels deep (pose.pose.position): ros_location and
+			// ros_heading dig it out, and convert it back to GAMA's frame
+			believed_position <- ros_location(msg);
+			believed_heading <- ros_heading(msg);
 		}
 	}
 
@@ -137,10 +127,9 @@ species controller {
 			target <- {rnd(2.0, world_size - 2.0), rnd(2.0, world_size - 2.0)};
 		}
 
-		bool sent <- ros_publish(commands, [
-			"linear"::["x"::min([1.5, distance]) * (abs(turn_error) < 45 ? 1.0 : 0.2)],
-			"angular"::["z"::(turn_error * 0.03) * #pi / 180.0]
-		]);
+		// speed in m/s, rate of turn in degrees per second: ros_twist converts to what ROS expects
+		bool sent <- ros_publish(commands, ros_twist(min([1.5, distance]) * (abs(turn_error) < 45 ? 1.0 : 0.2),
+			turn_error * 0.03));
 	}
 }
 
