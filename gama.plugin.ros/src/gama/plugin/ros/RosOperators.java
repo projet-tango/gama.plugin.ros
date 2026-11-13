@@ -204,7 +204,7 @@ public class RosOperators {
 	 *            the name written in the model
 	 * @return the profile
 	 */
-	private static ROS2QoSProfile qosNamed(final IScope scope, final String name) {
+	public static ROS2QoSProfile qosNamed(final IScope scope, final String name) {
 		if (name == null) return ROS2QoSProfile.DEFAULT;
 		return switch (name.toLowerCase().trim()) {
 			case "default" -> ROS2QoSProfile.DEFAULT;

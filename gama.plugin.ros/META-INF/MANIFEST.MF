@@ -10,5 +10,6 @@ Bundle-ActivationPolicy: lazy
 Require-Bundle: gama.dependencies,
  gama.annotations,
  gama.processor,
- gama.api
+ gama.api,
+ gama.core
 Automatic-Module-Name: gama.plugin.ros
