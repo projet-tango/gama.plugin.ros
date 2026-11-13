@@ -161,7 +161,7 @@ public class RosOperators {
 	 * @param messageType
 	 *            the message type
 	 * @param qos
-	 *            "default", "reliable" or "best_effort"
+	 *            "default", "reliable", "best_effort" or "latched"
 	 * @return the topic
 	 */
 	@operator (
@@ -170,7 +170,7 @@ public class RosOperators {
 			category = { RosConstants.CATEGORY },
 			concept = { RosConstants.CONCEPT })
 	@doc (
-			value = "Describes a topic with an explicit quality of service, among 'default', 'reliable' and 'best_effort'. Reliable retransmits until the message is acknowledged, which is what commands need; best effort does not, which is what a high-rate sensor needs, and is what most ROS drivers publish scans and images with. A subscription only receives from publishers whose QoS is compatible with its own, so a topic read as reliable from a best-effort driver stays silent.",
+			value = "Describes a topic with an explicit quality of service, among 'default', 'reliable', 'best_effort' and 'latched'. Reliable retransmits until the message is acknowledged, which is what commands need; best effort does not, which is what a high-rate sensor needs, and is what most ROS drivers publish scans and images with. A subscription only receives from publishers whose QoS is compatible with its own, so a topic read as reliable from a best-effort driver stays silent. Latched is reliable and transient-local, keeping the last message for subscribers that join later: it is what /tf_static and maps are published with, so something sent once in init still reaches an RViz started afterwards.",
 			examples = { @example (
 					value = "ros_topic scan <- ros_topic(\"/scan\", \"sensor_msgs/msg/LaserScan\", \"best_effort\");",
 					isExecutable = false) })
@@ -178,6 +178,21 @@ public class RosOperators {
 	public static GamaROSTopic rosTopic(final IScope scope, final String topicName, final String messageType,
 			final String qos) {
 		return new GamaROSTopic(scope, topicName, messageType, qosNamed(scope, qos));
+	}
+
+	/**
+	 * Builds the latched profile, a fresh one each time since jros2 profiles are mutable.
+	 *
+	 * @return the profile
+	 */
+	private static ROS2QoSProfile latched() {
+		// what tf2's StaticTransformBroadcaster uses: reliable, transient local, the last message only
+		final ROS2QoSProfile qos = new ROS2QoSProfile();
+		qos.reliability(ROS2QoSProfile.Reliability.RELIABLE);
+		qos.durability(ROS2QoSProfile.Durability.TRANSIENT_LOCAL);
+		qos.history(ROS2QoSProfile.History.KEEP_LAST);
+		qos.depth(1);
+		return qos;
 	}
 
 	/**
@@ -195,8 +210,9 @@ public class RosOperators {
 			case "default" -> ROS2QoSProfile.DEFAULT;
 			case "reliable" -> ROS2QoSProfile.RELIABLE;
 			case "best_effort" -> ROS2QoSProfile.BEST_EFFORT;
+			case "latched", "transient_local" -> latched();
 			default -> throw GamaRuntimeException.error("'" + name
-					+ "' is not a known quality of service. Use 'default', 'reliable' or 'best_effort'.", scope);
+					+ "' is not a known quality of service. Use 'default', 'reliable', 'best_effort' or 'latched'.", scope);
 		};
 	}
 
