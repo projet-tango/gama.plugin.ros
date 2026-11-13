@@ -25,6 +25,8 @@ import gama.api.exceptions.GamaRuntimeException;
 import gama.api.gaml.types.IType;
 import gama.api.gaml.types.Types;
 import gama.api.runtime.scope.IScope;
+import gama.api.types.color.IColor;
+import gama.api.types.geometry.IPoint;
 import gama.api.types.list.GamaListFactory;
 import gama.api.types.list.IList;
 import gama.api.types.map.GamaMapFactory;
@@ -32,6 +34,8 @@ import gama.api.types.map.IMap;
 import us.ihmc.fastddsjava.cdr.idl.IDLObjectSequence;
 import us.ihmc.fastddsjava.cdr.idl.IDLSequence;
 import us.ihmc.fastddsjava.cdr.idl.IDLStringSequence;
+import std_msgs.ColorRGBA;
+import std_msgs.Header;
 import us.ihmc.jros2.ROS2Message;
 
 /**
@@ -58,7 +62,13 @@ import us.ihmc.jros2.ROS2Message;
  * <tr><td>ROS string</td><td>GAML {@code string}</td></tr>
  * <tr><td>nested message</td><td>GAML {@code map<string, unknown>}</td></tr>
  * <tr><td>sequence, fixed-size array</td><td>GAML {@code list}</td></tr>
+ * <tr><td>std_msgs/ColorRGBA</td><td>a map, or, when publishing, a GAML {@code rgb}</td></tr>
  * </table>
+ *
+ * <p>
+ * When publishing, a {@code std_msgs/Header} left out of the map is filled in: wall-clock stamp, and the frame the GAMA
+ * world is placed in (see {@link RosFrame}).
+ * </p>
  *
  * <p>
  * Reading is tolerant: whatever the message holds is returned. Writing is strict: a key matching no field of the
@@ -212,6 +222,47 @@ public final class RosMessageConverter {
 					+ msg.getClass().getName() + ". Its fields are " + new TreeSet<>(accessors.keySet()) + ".", scope);
 			write(scope, msg, accessor, entry.getValue(), key);
 		}
+		fillDefaults(scope, msg, data, accessors);
+	}
+
+	/**
+	 * Fills what a model should never have to write by hand: the header of a message, when it is left out.
+	 *
+	 * <p>
+	 * A {@code std_msgs/Header} that is absent from the map, or present without a stamp or a frame, is given the
+	 * current wall-clock time and the frame the GAMA world is placed in (see {@link RosFrame}). Wall-clock, because
+	 * tf2 drops anything stamped in the past of what it already holds, and GAMA's {@code time} restarts at 0 on every
+	 * run. A model that wants a zero stamp, as some TF lookups do, writes it explicitly and is left alone.
+	 * </p>
+	 *
+	 * @param scope
+	 *            the scope
+	 * @param msg
+	 *            the message just filled
+	 * @param data
+	 *            the map it was filled from
+	 * @param accessors
+	 *            the fields of the message
+	 */
+	private static void fillDefaults(final IScope scope, final ROS2Message<?> msg, final Map<String, Object> data,
+			final Map<String, Accessor> accessors) {
+		if (msg instanceof final Header header) {
+			if (!data.containsKey("stamp")) {
+				final long[] now = RosFrame.nowAsStamp();
+				header.getStamp().setSec((int) now[0]);
+				header.getStamp().setNanosec((int) now[1]);
+			}
+			if (!data.containsKey("frameId")) { header.setFrameId(RosFrame.frameId(scope)); }
+			return;
+		}
+		for (final Accessor accessor : accessors.values()) {
+			if (accessor.getter().getReturnType() != Header.class || data.containsKey(accessor.name())) { continue; }
+			try {
+				fromGamaMap(scope, (Header) accessor.getter().invoke(msg), Map.of());
+			} catch (final ReflectiveOperationException e) {
+				// a getter of a generated message does not throw; the header simply stays at its ROS default
+			}
+		}
 	}
 
 	/**
@@ -266,7 +317,17 @@ public final class RosMessageConverter {
 	@SuppressWarnings ("unchecked")
 	private static void writeInPlace(final IScope scope, final Object target, final Object value, final String path) {
 		switch (target) {
+			case final ColorRGBA rgba when value instanceof final IColor c -> {
+				// a GAML rgb is four ints in 0..255, a std_msgs/ColorRGBA four floats in 0..1
+				rgba.setR(c.red() / 255f);
+				rgba.setG(c.green() / 255f);
+				rgba.setB(c.blue() / 255f);
+				rgba.setA(c.alpha() / 255f);
+			}
 			case final ROS2Message<?> sub -> {
+				// not converted silently: a location must be placed in the frame of the world, a velocity must not
+				if (value instanceof IPoint) throw typeError(scope, path,
+						"a map. A GAMA point is not converted on its own: use ros_point(p) for a location", value);
 				if (!(value instanceof Map)) throw typeError(scope, path, "a map", value);
 				fromGamaMap(scope, sub, (Map<String, Object>) value);
 			}
