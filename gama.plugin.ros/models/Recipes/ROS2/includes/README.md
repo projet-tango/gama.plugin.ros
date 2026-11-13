@@ -1,14 +1,67 @@
 # Running the ROS 2 models
 
-These files support `05 GAMA in RViz.gaml` and `06 Gazebo in the loop.gaml`. The other models in this
-project need nothing installed. Model 05 needs only ROS 2 and RViz; model 06 additionally needs Gazebo
-Sim and `ros_gz_bridge`.
+These files support the models that talk to ROS tools or robots. Models 01 to 04 and 08 need nothing
+installed. Models 05 and 07 need ROS 2 and RViz; 06 and 09 additionally need Gazebo Sim and
+`ros_gz_bridge`; 10 needs an AlphaBot2.
 
 | File | Used by | What it is |
 |---|---|---|
-| `gama_markers.rviz` | model 05 | an RViz2 layout with a MarkerArray display on `/gama/markers` |
-| `gama_loop.sdf` | model 06 | one differential-drive robot with real physics, walls and a pillar |
-| `gama_loop_bridge.yaml` | model 06 | `cmd_vel` out, `odometry` back |
+| `gama_markers.rviz` | models 05, 07, 09 | an RViz2 layout with a MarkerArray display on `/gama/markers` |
+| `gama_loop.sdf` | models 06, 09 | one differential-drive robot with real physics, walls and a pillar |
+| `gama_loop_bridge.yaml` | models 06, 09 | `cmd_vel` out, `odometry` and `pose` back |
+| `alphabot2/` | model 10 | the ROS node the AlphaBot2 needs on its Pi, and how to calibrate it |
+
+## Two ways to write the same model
+
+Models 01 to 06 do everything **by hand**, with the operators of the plugin: nodes, topics, messages as
+maps, conversions. Models 07 to 10 do the same things with the **`ros_moving` skill**, a drop-in
+replacement for GAMA's `moving` skill. The skill is built on the same operators, so both ways keep
+working, and they mix freely in one model.
+
+| By hand | With the skill | What |
+|---|---|---|
+| 05 GAMA in RViz | 07 Skill - mirror in RViz | GAMA moves the agents, RViz shows them |
+| 03 Driving a robot | 08 Skill - a robot of its own | a robot driven over DDS, played by GAMA itself |
+| 06 Gazebo in the loop | 09 Skill - Gazebo and RViz | Gazebo moves the robot, GAMA steers it, RViz shows everything |
+| — | 10 Skill - AlphaBot2 | a real robot with no encoder |
+
+## The `ros_moving` skill
+
+An agent with the skill and **no `ros_name` is a mirror**: every action is the one of `moving`, so the
+model behaves exactly as before, and the agent is also drawn in RViz. An agent **with a `ros_name` is
+embodied**: `move`, `wander`, `goto` and `follow` compute a velocity command for the robot instead of
+moving the agent, and `location`, `heading` and `real_speed` are what the robot reports.
+
+What the robot is — its topics, QoS, speed limits, controller gains, watchdog, markers — comes from its
+**profile**, as plain data, overridable at three levels, the last one winning:
+
+1. the built-in profiles: `generic` (`{ns}/cmd_vel` and `{ns}/odom`), `gazebo`, `alphabot2`;
+2. profiles defined by the model, per kind of robot: `ros_define_profile("my_bot", "alphabot2", ["max_speed"::0.2])`;
+3. the `ros_settings` map of one agent: `ros_settings <- ["cmd_topic"::"/bot/cmd_vel_safe"]`.
+
+`ros_profile("generic")` lists every setting. A misspelt key is an error naming those that exist.
+`ros_config` shows what is in force for an agent, and `ros_cmd_publisher`, `ros_pose_subscription` and
+`ros_odom_subscription` give the topics themselves to the operators of the plugin.
+
+Done by the skill, so that no model has to:
+
+| | |
+|---|---|
+| the frame of the world | `ros_point`, `ros_location`... conventions, and `/tf_static` published once |
+| markers | one MarkerArray per topic for all agents, stable ids, DELETEALL of a previous run, a lifetime |
+| headers | stamped with the wall clock, in the frame of the world |
+| a step with no action | a stop, as an agent of `moving` stays put when it does not move |
+| GAMA paused, frozen or closed | the **watchdog** sends a stop after `watchdog` seconds (0.5 by default) |
+| an agent that dies | a stop, and its marker deleted |
+| a robot that never answers | after `hint_after` seconds, the hint of its profile in the console |
+
+Where the pose comes from: `pose_topic` if the profile names one, else `odom_topic`, else it is
+**estimated** from the commands sent (`ros_estimated` is then true, and the model sets `location` and
+`heading` to say where the robot was put down).
+
+What the skill cannot do: put GAMA-only agents into a Gazebo world (that needs Gazebo services, and jros2
+only has topics), and honour `bounds:` on a real robot, which it cannot stop at a wall it does not know
+of. Wandering does turn back at the bounds, or at the edge of the world.
 
 ## Prerequisites
 
@@ -93,6 +146,10 @@ ros2 topic pub --once /model/gama_bot/cmd_vel geometry_msgs/msg/Twist "{}"
 ```
 
 `Ctrl+R` in Gazebo resets the world, which also works.
+
+Model 09 does not have this problem: the `ros_moving` skill runs a watchdog outside the simulation
+thread, which sends the stop itself when GAMA has been silent for half a second, paused, frozen or closed
+alike.
 
 Model 05 does not have this problem at all: a marker carries a pose rather than a velocity, and it
 expires. Nothing in RViz outlives the simulation that described it.
@@ -202,6 +259,19 @@ networkingMode=mirrored
 Then the two sides share the host's network stack and discovery works. Allowing `java.exe` through the
 Windows firewall on private networks may also be needed. Running GAMA inside WSL2 alongside ROS avoids
 the question entirely.
+
+## Model 09 — Gazebo and RViz at once
+
+The same three commands as model 06, plus RViz:
+
+```bash
+gz sim -r gama_loop.sdf
+ros2 run ros_gz_bridge parameter_bridge --ros-args -p config_file:=gama_loop_bridge.yaml
+rviz2 -d gama_markers.rviz
+```
+
+Gazebo shows the robot. RViz shows the robot at the pose Gazebo reports, and the GAMA-only agents next
+to it.
 
 ## Adding agents to model 05
 
